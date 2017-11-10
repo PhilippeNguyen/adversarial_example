@@ -14,14 +14,19 @@ from keras.callbacks import EarlyStopping
 from sklearn.preprocessing import OneHotEncoder
 import numpy as np
 import argparse
+import os
 from scipy.optimize import fmin_l_bfgs_b
-
-
-def bfgs(input_val,input_tensor,loss):
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+fs = os.path.sep
+def bfgs(input_val,input_tensor,loss,
+         num_iter=5,
+         maxfun=20):
     grads = K.gradients(loss,input_tensor)
 
     eval_func = K.function([input_tensor],[loss]+grads)
-    initial_eval = eval_func([input_val])
     
     
     def eval_loss_and_grads(params):
@@ -32,7 +37,6 @@ def bfgs(input_val,input_tensor,loss):
             grad_values = outs[1].flatten().astype('float64')
         else:
             grad_values = np.array(outs[1:]).flatten().astype('float64')
-        print(np.sum(loss_value))
         return loss_value, grad_values
     
     
@@ -60,10 +64,10 @@ def bfgs(input_val,input_tensor,loss):
     evaluator = Evaluator()
     
     x = input_val
-    for i in range(20):
+    for i in range(num_iter):
         print('Start of iteration', i)
         x, min_val, info = fmin_l_bfgs_b(evaluator.loss, x.flatten(),
-                                         fprime=evaluator.grads, maxfun=20)
+                                         fprime=evaluator.grads, maxfun=maxfun)
         print('Current loss value:', np.sum(min_val))
     
     return x.reshape(np.shape(input_val))
@@ -128,7 +132,25 @@ def logreg_model(input_shape,num_categories,
     x = Activation('softmax')(x)
     model = keras.models.Model(inpt,x)
     return model
+
+def select_adversarial_candidates(model,X,Y,num_examples):
+    predictions = model.predict(X)
+    x_shape,y_shape = np.shape(X),np.shape(Y)
+    new_X = np.zeros((num_examples,*x_shape[1:]))
+    new_Y = np.zeros((num_examples,*y_shape[1:]))
+    new_idx = 0
     
+    for idx in range(x_shape[0]):
+       
+        if np.argmax(predictions[idx]) == np.argmax(Y[idx]):
+            new_X[new_idx] = X[idx]
+            new_Y[new_idx] = Y[idx]
+            new_idx+=1
+        if new_idx >= num_examples:
+            break
+    return new_X[:new_idx],new_Y[:new_idx]
+    
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--dataset', dest='dataset',
@@ -136,20 +158,29 @@ if __name__ == '__main__':
                     help='dataset to use (`mnist`)')
     
     parser.add_argument('--num_adversaries', dest='num_adversaries',
-                action='store', default=32,type=int,
+                action='store', default=100,type=int,
                 help='number of adversaries to generate')
+    parser.add_argument('--num_images', dest='num_images',
+                action='store', default=3,type=int,
+                help='number of images to generate')
+    parser.add_argument('--output_folder', dest='output_folder',
+                action='store', default=None,
+                help='number of images to generate')
+    
     
     args = parser.parse_args()
-    
+    if args.output_folder is not None:
+        if args.output_folder.endswith(fs):
+             output_folder = args.output_folder
+        else:
+             output_folder = args.output_folder + fs
+        os.makedirs(output_folder,exist_ok=True)
+
     X_train,y_train,X_test,y_test = get_dataset(args.dataset)
     
-#    X_train = X_train.reshape(np.shape(X_train)[0],np.prod(np.shape(X_train)[1:]))
-#    X_test = X_test.reshape(np.shape(X_test)[0],np.prod(np.shape(X_test)[1:]))
-
     
     input_shape = np.shape(X_train)[1:]
     num_categories = np.shape(y_train)[1]
-    
     
     
     model = logreg_model(input_shape=input_shape,
@@ -164,21 +195,44 @@ if __name__ == '__main__':
     
     model_weights = model.get_weights()
     
-    X_new = X_train[:args.num_adversaries]
+    X_cand,y_cand = select_adversarial_candidates(model,X_train,
+                                                y_train,args.num_adversaries)
+    initial_predictions = model.predict(X_cand)
     unique_vectors = np.unique(y_train,axis=0)
 
-    y_old = y_train[:args.num_adversaries]
-    y_new = swap_y(y_old,unique_vectors)
-    y_new_tensor = K.variable(y_new)
+    y_new = swap_y(y_cand,unique_vectors)
     
-    new_input = K.variable(X_new)
+    y_new_tensor = K.variable(y_new)
+    new_input = K.variable(X_cand)
     
     new_model = logreg_model(input_shape,num_categories,
                              input_tensor=new_input)
     new_model.set_weights(model_weights)
-    
     loss = K.categorical_crossentropy(y_new_tensor,new_model.output)
 
-    adversary_x = bfgs(X_new,new_input,loss)
+    adversary_x = bfgs(X_cand,new_input,loss)
+    adversary_y = model.predict(adversary_x)
+    
+    
+    #check adversary predictions
+    num_adversaries = np.shape(adversary_x)[0]
+    successful_adv = []
 
+    for adv_idx in range(num_adversaries):
+        if np.argmax(adversary_y[adv_idx]) != np.argmax(y_cand[adv_idx]):
+            successful_adv.append(adv_idx)
+            if (len(successful_adv) < args.num_images 
+                and plt is not None
+                and args.output_folder is not None):
+                plt.imshow(adversary_x[adv_idx])
+                title_str = ('Predicts as {:d}, '
+                             'predicted original as {:d}').format(
+                                    np.argmax(adversary_y[adv_idx]),
+                                    np.argmax(initial_predictions[adv_idx]))
+                plt.title(title_str)
+                plt.savefig(output_folder+str(adv_idx)+'.png')
+    
+    print("Adversaries worked : {:d} out of {:d}".format(len(successful_adv),num_adversaries))
+    
+    ### Test successful adversaries against a nearest neighbors classifier
     
