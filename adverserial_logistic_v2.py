@@ -12,6 +12,7 @@ from keras.layers import (Dense,Activation,
                           Flatten,Input)
 from keras.callbacks import EarlyStopping
 from keras.utils import to_categorical
+from keras.optimizers import Optimizer
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -89,6 +90,76 @@ def select_adversarial_candidates(model,X,Y,num_examples):
     return new_X[:new_idx],new_Y[:new_idx]
 
 
+class Adv_Adam(Optimizer):
+  ''' Slight modification of keras Adam which returns the grad instead
+      of updating as part of the tf call
+  '''
+  def __init__(self,
+               lr=0.001,
+               beta_1=0.9,
+               beta_2=0.999,
+               epsilon=1e-8,
+               decay=0.,
+               **kwargs):
+    super(Adv_Adam, self).__init__(**kwargs)
+    self.iterations = K.variable(0, name='iterations')
+    self.lr = K.variable(lr, name='lr')
+    self.beta_1 = K.variable(beta_1, name='beta_1')
+    self.beta_2 = K.variable(beta_2, name='beta_2')
+    self.epsilon = epsilon
+    self.decay = K.variable(decay, name='decay')
+    self.initial_decay = decay
+    
+  def get_updates(self, params, loss,shapes=None):
+    grads = self.get_gradients(loss, params)
+    self.updates = [K.update_add(self.iterations, 1)]
+
+    lr = self.lr
+    if self.initial_decay > 0:
+      lr *= (1. / (1. + self.decay * self.iterations))
+
+    t = self.iterations + 1
+    lr_t = lr * (K.sqrt(1. - K.pow(self.beta_2, t)) /
+                 (1. - K.pow(self.beta_1, t)))
+    if shapes is None:
+        shapes = [K.int_shape(p) for p in params]
+    ms = [K.zeros(shape) for shape in shapes]
+    vs = [K.zeros(shape) for shape in shapes]
+    self.weights = [self.iterations] + ms + vs
+
+    for p, g, m, v in zip(params, grads, ms, vs):
+      m_t = (self.beta_1 * m) + (1. - self.beta_1) * g
+      v_t = (self.beta_2 * v) + (1. - self.beta_2) * K.square(g)
+      grad= lr_t * m_t / (K.sqrt(v_t) + self.epsilon)
+
+      self.updates.append(K.update(m, m_t))
+      self.updates.append(K.update(v, v_t))
+
+      return grad,self.updates
+  
+def fit_adv(images,model,loss,
+            num_iter=100,
+            optimizer=None):
+    if optimizer is None:
+        optimizer = Adv_Adam()
+        
+    model_input = model.input
+    grad,optimizer_updates = optimizer.get_updates(loss=[loss],
+                                 params=[model_input],
+                                 shapes = [images.shape])
+
+    iter_func = K.function([model_input],
+                 [loss,grad],
+                 updates=optimizer_updates)
+    
+    for i in range(num_iter):
+        loss,g = iter_func([images])
+        images = images - g
+        if i %10 == 0:
+            print('iter ',str(i),', current adversary loss : ', loss)
+            
+    return images
+
 import argparse
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -106,6 +177,8 @@ if __name__ == '__main__':
                 action='store', default=None,
                 help='number of images to generate')
     args = parser.parse_args()
+    
+    #config
     data_str = args.dataset
     num_adversaries = args.num_adversaries
     
@@ -119,7 +192,7 @@ if __name__ == '__main__':
                          num_categories=num_categories)
     
     model.compile('adam','categorical_crossentropy',['acc'])
-    early_stop = EarlyStopping(patience=10)
+    early_stop = EarlyStopping(patience=5)
     model.fit(X_train,y_train,
               epochs=100,
               callbacks=[early_stop],
@@ -127,7 +200,7 @@ if __name__ == '__main__':
     model_weights = model.get_weights()
     
     X_cand,y_cand = select_adversarial_candidates(model,X_train,
-                                                y_train,args.num_adversaries)
+                                                y_train,num_adversaries)
     initial_predictions = model.predict(X_cand)
     unique_vectors = np.unique(y_train,axis=0)
 
@@ -137,35 +210,36 @@ if __name__ == '__main__':
     
     ###TODO: Bottom portion will be Changed
     
-    y_new_tensor = K.variable(y_new)
-    new_input = K.variable(X_cand)
+#    y_new_tensor = K.variable(y_new)
+#    new_input = K.variable(X_cand)
     
-    new_model = logreg_model(input_shape,num_categories,
-                             input_tensor=new_input)
-    new_model.set_weights(model_weights)
-    loss = K.categorical_crossentropy(y_new_tensor,new_model.output)
+#    new_model = logreg_model(input_shape,num_categories,
+#                             input_tensor=new_input)
+#    new_model.set_weights(model_weights)
+    
+    loss = K.sum(K.categorical_crossentropy(y_new,model.output))
 
-    adversary_x = bfgs(X_cand,new_input,loss)
+    adversary_x = fit_adv(X_cand,model,loss)
     adversary_y = model.predict(adversary_x)
     
     
-    #check adversary predictions
-    num_adversaries = np.shape(adversary_x)[0]
-    successful_adv = []
-
-    for adv_idx in range(num_adversaries):
-        if np.argmax(adversary_y[adv_idx]) != np.argmax(y_cand[adv_idx]):
-            successful_adv.append(adv_idx)
-            if (len(successful_adv) < args.num_images 
-                and plt is not None
-                and args.output_folder is not None):
-                plt.imshow(adversary_x[adv_idx])
-                title_str = ('Predicts as {:d}, '
-                             'predicted original as {:d}').format(
-                                    np.argmax(adversary_y[adv_idx]),
-                                    np.argmax(initial_predictions[adv_idx]))
-                plt.title(title_str)
-                plt.savefig(output_folder+str(adv_idx)+'.png')
-    
-    print("Adversaries worked : {:d} out of {:d}".format(len(successful_adv),num_adversaries))
-    
+#    #check adversary predictions
+#    num_adversaries = np.shape(adversary_x)[0]
+#    successful_adv = []
+#
+#    for adv_idx in range(num_adversaries):
+#        if np.argmax(adversary_y[adv_idx]) != np.argmax(y_cand[adv_idx]):
+#            successful_adv.append(adv_idx)
+#            if (len(successful_adv) < args.num_images 
+#                and plt is not None
+#                and args.output_folder is not None):
+#                plt.imshow(adversary_x[adv_idx])
+#                title_str = ('Predicts as {:d}, '
+#                             'predicted original as {:d}').format(
+#                                    np.argmax(adversary_y[adv_idx]),
+#                                    np.argmax(initial_predictions[adv_idx]))
+#                plt.title(title_str)
+#                plt.savefig(output_folder+str(adv_idx)+'.png')
+#    
+#    print("Adversaries worked : {:d} out of {:d}".format(len(successful_adv),num_adversaries))
+#    
