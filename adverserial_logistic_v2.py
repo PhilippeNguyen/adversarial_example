@@ -36,11 +36,13 @@ def get_dataset(data_name):
             y_train = y_train[valid_train]
             X_test = X_test[valid_test]
             y_test = y_test[valid_test]
+        else:
+            mnist_ints =list(range(10))
             
         y_train = to_categorical(y_train)
         y_test = to_categorical(y_test)
         
-    return X_train,y_train,X_test,y_test
+    return X_train,y_train,X_test,y_test,mnist_ints
   
 def swap_y(y_set,unique_vectors):
     y_shape = np.shape(y_set)
@@ -183,7 +185,7 @@ if __name__ == '__main__':
     num_adversaries = args.num_adversaries
     
     
-    X_train,y_train,X_test,y_test = get_dataset(data_str)
+    X_train,y_train,X_test,y_test,mnist_ints = get_dataset(data_str)
     
     input_shape = np.shape(X_train)[1:]
     num_categories = np.shape(y_train)[1]
@@ -207,39 +209,35 @@ if __name__ == '__main__':
     y_new = swap_y(y_cand,unique_vectors)
     
     
-    
-    ###TODO: Bottom portion will be Changed
-    
-#    y_new_tensor = K.variable(y_new)
-#    new_input = K.variable(X_cand)
-    
-#    new_model = logreg_model(input_shape,num_categories,
-#                             input_tensor=new_input)
-#    new_model.set_weights(model_weights)
-    
     loss = K.sum(K.categorical_crossentropy(y_new,model.output))
 
     adversary_x = fit_adv(X_cand,model,loss)
     adversary_y = model.predict(adversary_x)
     
     
-#    #check adversary predictions
-#    num_adversaries = np.shape(adversary_x)[0]
-#    successful_adv = []
-#
-#    for adv_idx in range(num_adversaries):
-#        if np.argmax(adversary_y[adv_idx]) != np.argmax(y_cand[adv_idx]):
-#            successful_adv.append(adv_idx)
-#            if (len(successful_adv) < args.num_images 
-#                and plt is not None
-#                and args.output_folder is not None):
-#                plt.imshow(adversary_x[adv_idx])
-#                title_str = ('Predicts as {:d}, '
-#                             'predicted original as {:d}').format(
-#                                    np.argmax(adversary_y[adv_idx]),
-#                                    np.argmax(initial_predictions[adv_idx]))
-#                plt.title(title_str)
-#                plt.savefig(output_folder+str(adv_idx)+'.png')
-#    
-#    print("Adversaries worked : {:d} out of {:d}".format(len(successful_adv),num_adversaries))
-#    
+    
+    #%%
+    #check adversary predictions
+    
+    successful_adv = []
+    for adv_idx in range(num_adversaries):
+        if np.argmax(adversary_y[adv_idx]) != np.argmax(y_cand[adv_idx]):
+            successful_adv.append(adv_idx)
+    
+    print("Adversaries worked : {:d} out of {:d}".format(len(successful_adv),num_adversaries))
+    
+    
+    #%%
+    
+    successful_adv_x = adversary_x[successful_adv]
+    successful_adv_y = adversary_y[successful_adv]
+    original_x = X_cand[successful_adv]
+    original_y = y_cand[successful_adv]
+    if len(successful_adv) > 0:
+        plt.imshow(successful_adv_x[0])
+        print('model incorrectly predicts this adversary as ',
+              mnist_ints[np.argmax(adversary_y[0])])
+    if len(successful_adv) > 0:
+        plt.imshow(original_x[0])
+        print('model predicted the original as ' ,
+              mnist_ints[np.argmax(original_y[0])])
