@@ -201,8 +201,8 @@ if __name__ == '__main__':
               validation_data=(X_test,y_test))
     model_weights = model.get_weights()
     
-    X_cand,y_cand = select_adversarial_candidates(model,X_train,
-                                                y_train,num_adversaries)
+    X_cand,y_cand = select_adversarial_candidates(model,X_test,
+                                                y_test,num_adversaries)
     initial_predictions = model.predict(X_cand)
     unique_vectors = np.unique(y_train,axis=0)
 
@@ -223,8 +223,8 @@ if __name__ == '__main__':
     for adv_idx in range(num_adversaries):
         if np.argmax(adversary_y[adv_idx]) != np.argmax(y_cand[adv_idx]):
             successful_adv.append(adv_idx)
-    
-    print("Adversaries worked : {:d} out of {:d}".format(len(successful_adv),num_adversaries))
+    num_sucessful_adv = len(successful_adv)
+    print("Adversaries worked : {:d} out of {:d}".format(num_sucessful_adv,num_adversaries))
     
     
     #%%
@@ -234,10 +234,41 @@ if __name__ == '__main__':
     original_x = X_cand[successful_adv]
     original_y = y_cand[successful_adv]
     if len(successful_adv) > 0:
-        plt.imshow(successful_adv_x[0])
-        print('model incorrectly predicts this adversary as ',
-              mnist_ints[np.argmax(adversary_y[0])])
+      print('Here is the original image')
+      plt.imshow(original_x[0])
+      print('model predicted the original as ' ,
+            mnist_ints[np.argmax(original_y[0])])
+
     if len(successful_adv) > 0:
-        plt.imshow(original_x[0])
-        print('model predicted the original as ' ,
-              mnist_ints[np.argmax(original_y[0])])
+      print('Here is the adversarial version')
+      plt.imshow(successful_adv_x[0])
+      print('model incorrectly predicts this adversary as ',
+            mnist_ints[np.argmax(adversary_y[0])])
+        
+        
+    #%%
+    from sklearn.neighbors import KNeighborsClassifier
+    X_train_flat = X_train.reshape(X_train.shape[0],-1)
+    X_test_flat = X_test.reshape(X_test.shape[0],-1)
+    X_cand_flat = X_cand.reshape(X_cand.shape[0],-1)
+    successful_adv_x_flat = successful_adv_x.reshape(successful_adv_x.shape[0],-1)
+    original_x_flat = original_x.reshape(original_x.shape[0],-1)
+    k = 5
+    knn = KNeighborsClassifier(n_neighbors=5).fit(X_train_flat,y_train)
+    
+    original_y_pred = knn.predict(original_x_flat)
+    num_original_failed = np.sum(np.argmax(original_y_pred,axis=1)
+                                !=np.argmax(original_y,axis=1))
+    
+    print('KNN Success rate on the original X candidates: {:d} of {:d}'.format(
+            num_sucessful_adv-num_original_failed,num_sucessful_adv))
+    
+    #%%
+    successful_adv_y_pred = knn.predict(successful_adv_x_flat)
+    successful_adv_y_incorrect = (np.argmax(successful_adv_y_pred,axis=1)
+                                    !=np.argmax(original_y,axis=1))
+                                
+    num_successful_adv_failed = np.sum(successful_adv_y_incorrect)
+    print('KNN Success rate on the adversarial X candidates: {:d} of {:d}'.format(
+        num_sucessful_adv-num_successful_adv_failed,num_sucessful_adv))
+    
